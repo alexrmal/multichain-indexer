@@ -214,9 +214,37 @@ live indexing — there's no batching, so pointing it at a start block
 thousands of blocks back will work but will be slow and rate-limit-prone.
 This is "configurable start height," not "fast historical sync."
 
+## WebSocket subscriptions
+
+Alongside the poll loop, a second goroutine per chain dials the same
+Alchemy endpoint's WebSocket URL (derived from the HTTPS URL by swapping the
+scheme — `deriveWSURL` in `main.go` — same API key, no new secret) and calls
+`SubscribeNewHead`. Each new header does a non-blocking send on a small
+`wake` channel that the poll loop's wait (`sleepOrDone` in `indexer.go`) also
+selects on, so a new block is noticed within milliseconds instead of waiting
+out the rest of `pollInterval`.
+
+This is deliberately a **supplement, not a replacement**: `tick()` — the
+actual fetch, parent-hash check, and index/rollback logic — is completely
+unchanged and is still the only code path that decides what gets written to
+Postgres. WebSocket delivery only changes *when* the poll loop wakes up, not
+what it does. If the socket drops, `watchNewHeads` logs it and retries with
+backoff; the poll loop keeps working as the fallback regardless. Verified
+live: both chains' subscriptions connected (`websocket subscription active`)
+and kept indexing normally for 30s with zero drops, then shut down cleanly
+on SIGINT alongside the poll goroutines.
+
+Named scope limit: a "fully event-driven" indexer would consume the header
+data delivered over the socket directly and skip the redundant
+`BlockNumber` poll call entirely — but that means correctly handling
+out-of-order headers, duplicates, and gaps during a reconnect, which is
+meaningfully harder to get right. This sidesteps all of that by treating the
+WebSocket purely as a latency optimization on top of the already-correct
+poll path. Accurate framing: "uses a WebSocket subscription to reduce
+detection latency," not "fully event-driven ingestion."
+
 ## Known gaps
 
-- No WebSocket subscriptions — polling only.
 - Reorg walk-back is capped at 20 blocks; a deeper reorg logs a fatal error
   requiring manual intervention.
 - Balances track native-token value only (via `eth_getBalance`), not a full

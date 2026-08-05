@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -37,6 +38,23 @@ var chains = []chainConfig{
 // database and the exact same Indexer code path.
 var demoChains = []chainConfig{
 	{name: "anvil-fork-demo", chainID: 999000001, rpcEnvVar: "ANVIL_RPC_URL", startBlockVar: "ANVIL_START_BLOCK"},
+}
+
+// deriveWSURL turns an HTTP(S) RPC URL into the equivalent WebSocket URL,
+// e.g. https://eth-sepolia.g.alchemy.com/v2/KEY -> wss://.../v2/KEY. Alchemy
+// serves both protocols from the same host/path/API key, so no separate
+// WebSocket secret is needed. Returns ok=false for any other scheme rather
+// than guessing, since WebSocket support here is a latency optimization,
+// not a requirement — the poll loop works fine without it.
+func deriveWSURL(httpURL string) (string, bool) {
+	switch {
+	case strings.HasPrefix(httpURL, "https://"):
+		return "wss://" + strings.TrimPrefix(httpURL, "https://"), true
+	case strings.HasPrefix(httpURL, "http://"):
+		return "ws://" + strings.TrimPrefix(httpURL, "http://"), true
+	default:
+		return "", false
+	}
 }
 
 func main() {
@@ -90,6 +108,7 @@ func main() {
 			Client:     client,
 			Pool:       pool,
 			StartBlock: startBlock,
+			wake:       make(chan struct{}, 1),
 		}
 
 		wg.Add(1)
@@ -97,6 +116,19 @@ func main() {
 			defer wg.Done()
 			idx.Run(ctx)
 		}()
+
+		if wsURL, ok := deriveWSURL(rpcURL); ok {
+			wsClient, err := ethclient.DialContext(ctx, wsURL)
+			if err != nil {
+				log.Printf("[%s] websocket dial failed, continuing on polling only: %v", cfg.name, err)
+			} else {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					idx.watchNewHeads(ctx, wsClient)
+				}()
+			}
+		}
 	}
 
 	<-ctx.Done()

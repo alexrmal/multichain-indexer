@@ -9,6 +9,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -69,9 +70,24 @@ type Indexer struct {
 	// proceeds one block at a time from there, same pace as live indexing;
 	// this is not a fast bulk-historical-sync path.
 	StartBlock int64
+
+	// wake is a low-latency nudge from watchNewHeads: when a WebSocket
+	// subscription delivers a new head, it does a non-blocking send here so
+	// Run's poll wait returns immediately instead of waiting out the rest
+	// of pollInterval. It's purely a latency optimization — tick() is still
+	// the only code path that actually fetches and validates a block, so
+	// WebSocket delivery never bypasses the real detection logic. Buffered
+	// 1 so a wake while a tick is already in flight isn't lost, and a
+	// missed/duplicate wake is harmless either way since tick() is
+	// idempotent per poll.
+	wake chan struct{}
 }
 
 func (idx *Indexer) Run(ctx context.Context) {
+	if idx.wake == nil {
+		idx.wake = make(chan struct{}, 1)
+	}
+
 	for {
 		if ctx.Err() != nil {
 			log.Printf("[%s] shutting down", idx.Name)
@@ -81,29 +97,86 @@ func (idx *Indexer) Run(ctx context.Context) {
 		advanced, err := idx.tick(ctx)
 		if err != nil {
 			log.Printf("[%s] error: %v", idx.Name, err)
-			if !sleepOrDone(ctx, pollInterval) {
+			if !sleepOrDone(ctx, idx.wake, pollInterval) {
 				return
 			}
 			continue
 		}
 		if !advanced {
-			if !sleepOrDone(ctx, pollInterval) {
+			if !sleepOrDone(ctx, idx.wake, pollInterval) {
 				return
 			}
 		}
 	}
 }
 
-// sleepOrDone waits out d, or returns false immediately if ctx is
-// cancelled first — so a shutdown signal interrupts the poll wait instead
-// of waiting out the rest of the interval.
-func sleepOrDone(ctx context.Context, d time.Duration) bool {
+// sleepOrDone waits out d, or returns early (still true) if wake fires, or
+// returns false immediately if ctx is cancelled — so either a shutdown
+// signal or a WebSocket new-head notification interrupts the poll wait
+// instead of waiting out the rest of the interval.
+func sleepOrDone(ctx context.Context, wake <-chan struct{}, d time.Duration) bool {
 	select {
 	case <-ctx.Done():
 		return false
+	case <-wake:
+		return true
 	case <-time.After(d):
 		return true
 	}
+}
+
+// watchNewHeads subscribes to new block headers over a WebSocket connection
+// and nudges idx.wake on each one, so a new head is noticed within
+// milliseconds instead of up to pollInterval later. It never touches
+// Postgres or decides what's canonical — tick() does that, unchanged. If
+// the subscription errors or the socket drops, it logs and retries with
+// backoff rather than treating that as fatal: the poll loop keeps working
+// as the reliable fallback regardless of WebSocket health.
+func (idx *Indexer) watchNewHeads(ctx context.Context, wsClient *ethclient.Client) {
+	if idx.wake == nil {
+		idx.wake = make(chan struct{}, 1)
+	}
+
+	attempt := 0
+	for ctx.Err() == nil {
+		headers := make(chan *types.Header)
+		sub, err := wsClient.SubscribeNewHead(ctx, headers)
+		if err != nil {
+			attempt++
+			log.Printf("[%s] websocket subscribe failed (attempt %d): %v", idx.Name, attempt, err)
+			if !sleepOrDone(ctx, nil, backoffDelay(attempt)) {
+				return
+			}
+			continue
+		}
+		attempt = 0
+		log.Printf("[%s] websocket subscription active", idx.Name)
+
+	consume:
+		for {
+			select {
+			case <-ctx.Done():
+				sub.Unsubscribe()
+				return
+			case err := <-sub.Err():
+				log.Printf("[%s] websocket subscription dropped: %v", idx.Name, err)
+				break consume
+			case <-headers:
+				select {
+				case idx.wake <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}
+}
+
+func backoffDelay(attempt int) time.Duration {
+	d := rpcRetryBaseWait * time.Duration(1<<attempt)
+	if d > 30*time.Second {
+		d = 30 * time.Second
+	}
+	return d
 }
 
 // tick indexes at most one block. It returns advanced=true if it made

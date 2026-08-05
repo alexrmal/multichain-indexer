@@ -58,7 +58,10 @@ func deriveWSURL(httpURL string) (string, bool) {
 }
 
 func main() {
-	if err := godotenv.Load(); err != nil {
+	// .env is a local-dev convenience only; in deployed environments (e.g.
+	// Railway) env vars are set directly by the platform and there's no
+	// .env file at all, so a missing file here is not an error.
+	if err := godotenv.Load(); err != nil && !os.IsNotExist(err) {
 		log.Fatal("Error loading .env file: ", err)
 	}
 

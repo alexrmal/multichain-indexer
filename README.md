@@ -148,7 +148,28 @@ go run .
 ```
 
 The schema is created automatically on startup (`CREATE TABLE IF NOT EXISTS`
-via `schema.sql`) — no separate migration step.
+via `schema.sql`) — no separate migration step. Locally, `.env` is loaded if
+present but not required; in a deployed environment (see below) env vars
+come from the platform directly, with no `.env` file at all.
+
+## Deployment
+
+Deployed on [Railway](https://railway.app) as a background worker (no
+inbound HTTP, purely outbound to Alchemy + Neon, so no port/health-check
+requirement — this ruled out Render's free tier, which is web-service-only).
+Builds straight from the checked-in `Dockerfile` (multi-stage: `golang`
+build stage, `debian-slim` runtime with `ca-certificates` for TLS). Env vars
+(`ETH_RPC_URL`, `BASE_RPC_URL`, `DATABASE_URL`) are set directly on Railway,
+never in the image or the repo.
+
+`SIGTERM` handling (see Graceful shutdown, above) matters specifically here:
+Railway sends `SIGTERM` on every redeploy/restart, so a clean, prompt exit
+was a real prerequisite for this, not just a nice-to-have.
+
+Verified running continuously, not just "deployed once": watched
+`railway logs` and separately queried Postgres directly for both chains'
+max indexed block height a minute apart, confirming new blocks kept landing
+the whole time, sourced from the Railway container rather than a local run.
 
 ## Tests
 
@@ -250,5 +271,3 @@ detection latency," not "fully event-driven ingestion."
 - Balances track native-token value only (via `eth_getBalance`), not a full
   accounting ledger — no gas, logs, or ERC-20 transfer tracking.
 - Hardcoded two-chain config.
-- Not deployed anywhere yet — runs locally only. Would need a Railway (or
-  similar) account set up to do this, not attempted yet.

@@ -29,6 +29,16 @@ var chains = []chainConfig{
 	{name: "base-sepolia", chainID: 84532, rpcEnvVar: "BASE_RPC_URL", startBlockVar: "BASE_START_BLOCK"},
 }
 
+// demoChains is used only when DEMO_MODE=1, to point the indexer at a local
+// Anvil fork (see scripts/anvil-reorg-demo.sh) instead of the real chains.
+// It uses a reserved chain_id well outside any real network's range, and a
+// separate RPC/start-block env var, so a demo run can never collide with or
+// overwrite real indexed data even though it shares the same Postgres
+// database and the exact same Indexer code path.
+var demoChains = []chainConfig{
+	{name: "anvil-fork-demo", chainID: 999000001, rpcEnvVar: "ANVIL_RPC_URL", startBlockVar: "ANVIL_START_BLOCK"},
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Fatal("Error loading .env file: ", err)
@@ -47,8 +57,14 @@ func main() {
 		log.Fatal("Failed to apply schema: ", err)
 	}
 
+	activeChains := chains
+	if os.Getenv("DEMO_MODE") == "1" {
+		activeChains = demoChains
+		log.Println("DEMO_MODE=1: indexing only the local Anvil fork under a reserved demo chain_id")
+	}
+
 	var wg sync.WaitGroup
-	for _, cfg := range chains {
+	for _, cfg := range activeChains {
 		rpcURL := os.Getenv(cfg.rpcEnvVar)
 		if rpcURL == "" {
 			log.Fatalf("%s is not set", cfg.rpcEnvVar)

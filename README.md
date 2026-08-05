@@ -82,6 +82,46 @@ indexed block 45060717 (33 txs)
 indexed block 45060718 (31 txs)
 ```
 
+### A real reorg, via a local Anvil fork
+
+The DB-corruption method above proves the code path fires on a mismatched
+hash, but it doesn't prove the indexer heals a reorg against two *actually
+different real chains*. `scripts/anvil-reorg-demo.sh` does that: it forks
+real Ethereum Sepolia locally with [Anvil](https://book.getfoundry.sh/anvil/),
+points the indexer at the fork under a reserved demo `chain_id` (`999000001`
+— see `demoChains` in `main.go`, never touches real indexed data), then uses
+Anvil's `evm_snapshot`/`evm_revert` to mine one set of blocks, revert, and
+mine a *different* set of blocks at the same heights — two genuinely
+different, really-hashed forks, not an edited database row.
+
+```sh
+./scripts/anvil-reorg-demo.sh
+```
+
+Installs nothing itself — install Foundry first if you don't have it:
+`curl -L https://foundry.paradigm.xyz | bash && foundryup`. Actual output
+from a run:
+
+```
+==> forked at block 11421130
+==> mining branch A: 2 blocks
+==> reverting anvil to the pre-branch-A snapshot
+==> mining branch B: 4 different blocks (different recipient/amounts -> genuinely different hashes)
+
+=== reorg detected and healed against two real forks ===
+indexed block 11421130 (109 txs)
+indexed block 11421131 (1 txs)
+indexed block 11421132 (1 txs)
+reorg detected: incoming block 11421133 has parent 0x883c38dd..., stored block 11421132 has hash 0x45aa3adf...
+rolled back to block 11421130, re-indexing from there
+indexed block 11421131 (1 txs)
+indexed block 11421132 (1 txs)
+indexed block 11421133 (1 txs)
+```
+
+Verified directly against Postgres afterward, too: the re-indexed blocks'
+hashes match branch B's real `cast send` receipts exactly, not branch A's.
+
 ## Schema
 
 ```sql
@@ -182,8 +222,5 @@ This is "configurable start height," not "fast historical sync."
 - Balances track native-token value only (via `eth_getBalance`), not a full
   accounting ledger — no gas, logs, or ERC-20 transfer tracking.
 - Hardcoded two-chain config.
-- No real (Anvil-forked) reorg demo yet — only the DB-corruption method
-  above; a genuinely-forked-chain demo is a stronger proof and still on the
-  list. Blocked on installing Foundry, not attempted yet.
 - Not deployed anywhere yet — runs locally only. Would need a Railway (or
   similar) account set up to do this, not attempted yet.

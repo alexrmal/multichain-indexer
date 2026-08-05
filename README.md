@@ -143,6 +143,25 @@ errors (a 429) from non-retryable ones (a malformed request) — everything
 gets retried up to the cap, then surfaces as a logged error for the
 existing poll loop to pick up next tick.
 
+## Graceful shutdown
+
+`SIGINT`/`SIGTERM` cancel a shared `context.Context` (via
+`signal.NotifyContext` in `main.go`), which aborts any in-flight RPC/DB
+retry loop immediately rather than waiting out the rest of a poll interval
+or a retry backoff. `main()` waits for both chain goroutines to exit (with a
+10s bounded timeout as a safety net) before returning.
+
+Worth noting: block+transaction inserts were *already* atomic before this
+(`indexBlock` uses one Postgres transaction, and Postgres never applies an
+uncommitted transaction from a connection that just disappears) — a signal
+arriving mid-`indexBlock` cancels that transaction, it's never partially
+persisted. So this change is about exiting promptly, not fixing a
+consistency bug. One accepted gap: the per-address balance refresh after a
+block commits is a loop of independent calls, not itself transactional — a
+signal mid-loop can leave a few balances stale until the next tick, which is
+fine since balances are a self-healing cache, not the correctness-critical
+ledger.
+
 ## Known gaps
 
 - No WebSocket subscriptions — polling only.

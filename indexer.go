@@ -66,15 +66,36 @@ type Indexer struct {
 
 func (idx *Indexer) Run(ctx context.Context) {
 	for {
+		if ctx.Err() != nil {
+			log.Printf("[%s] shutting down", idx.Name)
+			return
+		}
+
 		advanced, err := idx.tick(ctx)
 		if err != nil {
 			log.Printf("[%s] error: %v", idx.Name, err)
-			time.Sleep(pollInterval)
+			if !sleepOrDone(ctx, pollInterval) {
+				return
+			}
 			continue
 		}
 		if !advanced {
-			time.Sleep(pollInterval)
+			if !sleepOrDone(ctx, pollInterval) {
+				return
+			}
 		}
+	}
+}
+
+// sleepOrDone waits out d, or returns false immediately if ctx is
+// cancelled first — so a shutdown signal interrupts the poll wait instead
+// of waiting out the rest of the interval.
+func sleepOrDone(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
 	}
 }
 

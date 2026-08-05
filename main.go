@@ -4,11 +4,17 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
 
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 )
+
+const shutdownTimeout = 10 * time.Second
 
 type chainConfig struct {
 	name      string
@@ -26,7 +32,8 @@ func main() {
 		log.Fatal("Error loading .env file: ", err)
 	}
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
 	if err != nil {
@@ -38,9 +45,8 @@ func main() {
 		log.Fatal("Failed to apply schema: ", err)
 	}
 
-	done := make(chan struct{})
+	var wg sync.WaitGroup
 	for _, cfg := range chains {
-		cfg := cfg
 		rpcURL := os.Getenv(cfg.rpcEnvVar)
 		if rpcURL == "" {
 			log.Fatalf("%s is not set", cfg.rpcEnvVar)
@@ -58,13 +64,26 @@ func main() {
 			Pool:    pool,
 		}
 
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			idx.Run(ctx)
-			done <- struct{}{}
 		}()
 	}
 
-	for range chains {
-		<-done
+	<-ctx.Done()
+	log.Println("shutdown signal received, waiting for in-flight work to finish...")
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Println("shutdown complete")
+	case <-time.After(shutdownTimeout):
+		log.Println("shutdown timed out, exiting anyway")
 	}
 }

@@ -128,6 +128,21 @@ go test ./...
   proves the actual SQL behavior rather than mocking it. Skips automatically
   if `DATABASE_URL` isn't set.
 
+## Retries
+
+RPC calls (`BlockNumber`, block fetches, header lookups, balance lookups)
+and DB writes (`indexBlock`, `rollback`, balance upserts) are wrapped in
+`withRetry` (`retry.go`) — capped exponential backoff, context-aware so a
+shutdown signal aborts a retry loop rather than waiting it out. DB retries
+wrap whole units of work (an entire `Begin`-to-`Commit` transaction, not a
+statement inside one already open) — retrying a single statement after a
+transient failure is wrong, since Postgres has already aborted that
+transaction server-side; the only correct retry is redoing the operation
+from a fresh transaction. Deliberately not doing: distinguishing retryable
+errors (a 429) from non-retryable ones (a malformed request) — everything
+gets retried up to the cap, then surfaces as a logged error for the
+existing poll loop to pick up next tick.
+
 ## Known gaps
 
 - No WebSocket subscriptions — polling only.

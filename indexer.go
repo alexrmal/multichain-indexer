@@ -50,6 +50,11 @@ const (
 	pollInterval  = 3 * time.Second
 	backfill      = 5  // blocks to seed on first run so there's local history to demo reorg against
 	maxReorgDepth = 20 // walk-back cap; deeper reorgs need manual intervention
+
+	rpcRetryAttempts = 4
+	rpcRetryBaseWait = 300 * time.Millisecond
+	dbRetryAttempts  = 3
+	dbRetryBaseWait  = 200 * time.Millisecond
 )
 
 type Indexer struct {
@@ -77,7 +82,12 @@ func (idx *Indexer) Run(ctx context.Context) {
 // progress (indexed a block or rolled back a reorg), so Run can immediately
 // try to catch up further without waiting out a full poll interval.
 func (idx *Indexer) tick(ctx context.Context) (bool, error) {
-	remoteLatest, err := idx.Client.BlockNumber(ctx)
+	var remoteLatest uint64
+	err := withRetry(ctx, rpcRetryAttempts, rpcRetryBaseWait, func() error {
+		var e error
+		remoteLatest, e = idx.Client.BlockNumber(ctx)
+		return e
+	})
 	if err != nil {
 		return false, fmt.Errorf("BlockNumber: %w", err)
 	}
@@ -100,7 +110,12 @@ func (idx *Indexer) tick(ctx context.Context) (bool, error) {
 	}
 
 	next := lastLocal + 1
-	block, err := fetchBlock(ctx, idx.Client, next)
+	var block *rawBlock
+	err = withRetry(ctx, rpcRetryAttempts, rpcRetryBaseWait, func() error {
+		var e error
+		block, e = fetchBlock(ctx, idx.Client, next)
+		return e
+	})
 	if err != nil {
 		return false, fmt.Errorf("fetchBlock(%d): %w", next, err)
 	}
@@ -114,11 +129,19 @@ func (idx *Indexer) tick(ctx context.Context) (bool, error) {
 			log.Printf("[%s] reorg detected: incoming block %d has parent %s, stored block %d has hash %s",
 				idx.Name, next, block.ParentHash.Hex(), lastLocal, storedHash)
 
-			forkPoint, err := idx.findForkPoint(ctx, lastLocal)
+			var forkPoint int64
+			err = withRetry(ctx, rpcRetryAttempts, rpcRetryBaseWait, func() error {
+				var e error
+				forkPoint, e = idx.findForkPoint(ctx, lastLocal)
+				return e
+			})
 			if err != nil {
 				return false, fmt.Errorf("findForkPoint: %w", err)
 			}
-			if err := idx.rollback(ctx, forkPoint); err != nil {
+			err = withRetry(ctx, dbRetryAttempts, dbRetryBaseWait, func() error {
+				return idx.rollback(ctx, forkPoint)
+			})
+			if err != nil {
 				return false, fmt.Errorf("rollback: %w", err)
 			}
 			log.Printf("[%s] rolled back to block %d, re-indexing from there", idx.Name, forkPoint)
@@ -126,7 +149,10 @@ func (idx *Indexer) tick(ctx context.Context) (bool, error) {
 		}
 	}
 
-	if err := idx.indexBlock(ctx, next, block); err != nil {
+	err = withRetry(ctx, dbRetryAttempts, dbRetryBaseWait, func() error {
+		return idx.indexBlock(ctx, next, block)
+	})
+	if err != nil {
 		return false, fmt.Errorf("indexBlock(%d): %w", next, err)
 	}
 	log.Printf("[%s] indexed block %d (%d txs)", idx.Name, next, len(block.Transactions))
@@ -249,9 +275,16 @@ func (idx *Indexer) indexBlock(ctx context.Context, number int64, block *rawBloc
 }
 
 func (idx *Indexer) refreshBalance(ctx context.Context, addr string, atBlock int64) error {
-	bal, err := idx.Client.BalanceAt(ctx, common.HexToAddress(addr), nil)
+	var bal *big.Int
+	err := withRetry(ctx, rpcRetryAttempts, rpcRetryBaseWait, func() error {
+		var e error
+		bal, e = idx.Client.BalanceAt(ctx, common.HexToAddress(addr), nil)
+		return e
+	})
 	if err != nil {
 		return err
 	}
-	return UpsertBalance(ctx, idx.Pool, idx.ChainID, addr, bal.String(), atBlock)
+	return withRetry(ctx, dbRetryAttempts, dbRetryBaseWait, func() error {
+		return UpsertBalance(ctx, idx.Pool, idx.ChainID, addr, bal.String(), atBlock)
+	})
 }

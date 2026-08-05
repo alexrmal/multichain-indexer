@@ -62,6 +62,13 @@ type Indexer struct {
 	ChainID int64
 	Client  *ethclient.Client
 	Pool    *pgxpool.Pool
+
+	// StartBlock, if > 0, overrides the default "start a few blocks behind
+	// the tip" seed on first run — lets indexing resume from a specific
+	// historical height instead of always starting live. Indexing still
+	// proceeds one block at a time from there, same pace as live indexing;
+	// this is not a fast bulk-historical-sync path.
+	StartBlock int64
 }
 
 func (idx *Indexer) Run(ctx context.Context) {
@@ -119,11 +126,15 @@ func (idx *Indexer) tick(ctx context.Context) (bool, error) {
 	}
 
 	if lastLocal == 0 {
-		seed := int64(remoteLatest) - backfill
-		if seed < 0 {
-			seed = 0
+		if idx.StartBlock > 0 {
+			lastLocal = idx.StartBlock - 1
+		} else {
+			seed := int64(remoteLatest) - backfill
+			if seed < 0 {
+				seed = 0
+			}
+			lastLocal = seed
 		}
-		lastLocal = seed
 	}
 
 	if int64(remoteLatest) <= lastLocal {

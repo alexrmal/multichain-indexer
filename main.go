@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -17,14 +18,15 @@ import (
 const shutdownTimeout = 10 * time.Second
 
 type chainConfig struct {
-	name      string
-	chainID   int64
-	rpcEnvVar string
+	name          string
+	chainID       int64
+	rpcEnvVar     string
+	startBlockVar string // optional env var naming a start block to backfill from
 }
 
 var chains = []chainConfig{
-	{name: "ethereum-sepolia", chainID: 11155111, rpcEnvVar: "ETH_RPC_URL"},
-	{name: "base-sepolia", chainID: 84532, rpcEnvVar: "BASE_RPC_URL"},
+	{name: "ethereum-sepolia", chainID: 11155111, rpcEnvVar: "ETH_RPC_URL", startBlockVar: "ETH_START_BLOCK"},
+	{name: "base-sepolia", chainID: 84532, rpcEnvVar: "BASE_RPC_URL", startBlockVar: "BASE_START_BLOCK"},
 }
 
 func main() {
@@ -57,11 +59,21 @@ func main() {
 			log.Fatalf("Failed to connect to %s: %v", cfg.name, err)
 		}
 
+		var startBlock int64
+		if v := os.Getenv(cfg.startBlockVar); v != "" {
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				log.Fatalf("%s must be an integer, got %q: %v", cfg.startBlockVar, v, err)
+			}
+			startBlock = n
+		}
+
 		idx := &Indexer{
-			Name:    cfg.name,
-			ChainID: cfg.chainID,
-			Client:  client,
-			Pool:    pool,
+			Name:       cfg.name,
+			ChainID:    cfg.chainID,
+			Client:     client,
+			Pool:       pool,
+			StartBlock: startBlock,
 		}
 
 		wg.Add(1)

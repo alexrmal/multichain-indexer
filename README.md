@@ -162,17 +162,28 @@ signal mid-loop can leave a few balances stale until the next tick, which is
 fine since balances are a self-healing cache, not the correctness-critical
 ledger.
 
+## Historical backfill
+
+Optional `ETH_START_BLOCK` / `BASE_START_BLOCK` env vars let a chain start
+indexing from a specific height instead of a few blocks behind the current
+tip — but only the first time (when that chain has zero rows locally); it
+has no effect on a chain that's already been indexed at all, so it can't be
+used to force a rewind. Stated plainly: this makes the indexer *able* to
+resume from an arbitrary height, at the same one-block-at-a-time pace as
+live indexing — there's no batching, so pointing it at a start block
+thousands of blocks back will work but will be slow and rate-limit-prone.
+This is "configurable start height," not "fast historical sync."
+
 ## Known gaps
 
 - No WebSocket subscriptions — polling only.
 - Reorg walk-back is capped at 20 blocks; a deeper reorg logs a fatal error
   requiring manual intervention.
-- No historical backfill — indexing starts a few blocks behind the current
-  tip, not from genesis or a configured start block.
 - Balances track native-token value only (via `eth_getBalance`), not a full
   accounting ledger — no gas, logs, or ERC-20 transfer tracking.
 - Hardcoded two-chain config.
 - No real (Anvil-forked) reorg demo yet — only the DB-corruption method
   above; a genuinely-forked-chain demo is a stronger proof and still on the
-  list.
-- Not deployed anywhere yet — runs locally only.
+  list. Blocked on installing Foundry, not attempted yet.
+- Not deployed anywhere yet — runs locally only. Would need a Railway (or
+  similar) account set up to do this, not attempted yet.

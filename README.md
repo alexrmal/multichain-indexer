@@ -110,10 +110,26 @@ go run .
 The schema is created automatically on startup (`CREATE TABLE IF NOT EXISTS`
 via `schema.sql`) — no separate migration step.
 
-## Known gaps (v1 scope, not bugs)
+## Tests
 
-- No RPC/DB retry or backoff — a failed call is retried on the next poll tick
-  with no backoff or attempt limit.
+```sh
+go test ./...
+```
+
+- `indexer_test.go` unit-tests the fork-point walk-back algorithm
+  (`findForkPointFrom`) in isolation — no chain, no database, just closures
+  — covering no-reorg, shallow reorg, a reorg exactly at the depth cap, a
+  reorg past the depth cap, and the walk-back-to-genesis edge case. This is
+  the core correctness claim of the project, so it's the most thoroughly
+  tested piece.
+- `db_test.go` integration-tests the Postgres layer directly (cascade delete
+  on rollback, balance upsert-in-place, address collection for a rolled-back
+  range) against a real database under a reserved test `chain_id`, so it
+  proves the actual SQL behavior rather than mocking it. Skips automatically
+  if `DATABASE_URL` isn't set.
+
+## Known gaps
+
 - No WebSocket subscriptions — polling only.
 - Reorg walk-back is capped at 20 blocks; a deeper reorg logs a fatal error
   requiring manual intervention.
@@ -121,4 +137,8 @@ via `schema.sql`) — no separate migration step.
   tip, not from genesis or a configured start block.
 - Balances track native-token value only (via `eth_getBalance`), not a full
   accounting ledger — no gas, logs, or ERC-20 transfer tracking.
-- No graceful shutdown, no tests, hardcoded two-chain config.
+- Hardcoded two-chain config.
+- No real (Anvil-forked) reorg demo yet — only the DB-corruption method
+  above; a genuinely-forked-chain demo is a stronger proof and still on the
+  list.
+- Not deployed anywhere yet — runs locally only.

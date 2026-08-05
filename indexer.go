@@ -133,29 +133,47 @@ func (idx *Indexer) tick(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// findForkPoint walks backward from `from`, comparing the locally stored
-// hash at each height against the chain's real hash, until it finds the
-// last common ancestor.
-func (idx *Indexer) findForkPoint(ctx context.Context, from int64) (int64, error) {
+// findForkPointFrom walks backward from `from`, comparing the locally
+// stored hash at each height against the chain's real hash, until it finds
+// the last common ancestor. It's a pure function (no I/O of its own) so the
+// walk-back algorithm — the core correctness claim of this project — can be
+// unit tested with plain closures instead of a real chain or database.
+func findForkPointFrom(from, maxDepth int64, remoteHash, localHash func(n int64) (string, error)) (int64, error) {
 	n := from
-	for depth := 0; depth < maxReorgDepth; depth++ {
+	for depth := int64(0); depth < maxDepth; depth++ {
 		if n == 0 {
 			return 0, nil
 		}
-		header, err := idx.Client.HeaderByNumber(ctx, big.NewInt(n))
+		rh, err := remoteHash(n)
 		if err != nil {
-			return 0, fmt.Errorf("HeaderByNumber(%d): %w", n, err)
+			return 0, fmt.Errorf("remoteHash(%d): %w", n, err)
 		}
-		localHash, err := GetBlockHash(ctx, idx.Pool, idx.ChainID, n)
+		lh, err := localHash(n)
 		if err != nil {
 			return 0, err
 		}
-		if header.Hash().Hex() == localHash {
+		if rh == lh {
 			return n, nil
 		}
 		n--
 	}
-	return 0, fmt.Errorf("reorg deeper than %d blocks, manual intervention needed", maxReorgDepth)
+	return 0, fmt.Errorf("reorg deeper than %d blocks, manual intervention needed", maxDepth)
+}
+
+// findForkPoint wires findForkPointFrom up to the real chain and database.
+func (idx *Indexer) findForkPoint(ctx context.Context, from int64) (int64, error) {
+	return findForkPointFrom(from, maxReorgDepth,
+		func(n int64) (string, error) {
+			header, err := idx.Client.HeaderByNumber(ctx, big.NewInt(n))
+			if err != nil {
+				return "", err
+			}
+			return header.Hash().Hex(), nil
+		},
+		func(n int64) (string, error) {
+			return GetBlockHash(ctx, idx.Pool, idx.ChainID, n)
+		},
+	)
 }
 
 // rollback removes every block above forkPoint (transactions cascade), then
